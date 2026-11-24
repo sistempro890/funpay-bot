@@ -251,11 +251,40 @@ def _resolve_chat_id(account: Account, order: object) -> int:
     raise RuntimeError("Не удалось определить chat_id покупателя")
 
 
+def _handle_new_message_event(account: Account, event: object, bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
+    msg = getattr(event, "message", None)
+    if msg is None:
+        return
+
+    author_id = getattr(msg, "author_id", None)
+    my_id = getattr(account, "id", None)
+    if author_id is not None and my_id is not None and author_id == my_id:
+        return
+
+    sender = getattr(msg, "author", None) or getattr(msg, "chat_name", None) or "Пользователь"
+    text = getattr(msg, "text", None) or ""
+    if not text:
+        return
+
+    asyncio.run_coroutine_threadsafe(
+        bot.send_message(
+            ADMIN_ID,
+            f"Сообщение на FunPay от <b>{sender}</b>:\n<blockquote>{text}</blockquote>",
+            parse_mode="HTML",
+        ),
+        loop,
+    )
+
+
 def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
     account = Account(FUNPAY_GOLDEN_KEY).get()
     runner = Runner(account)
 
     for event in runner.listen(requests_delay=4.0):
+        if event.type == enums.EventTypes.NEW_MESSAGE:
+            _handle_new_message_event(account, event, bot, loop)
+            continue
+
         if event.type != enums.EventTypes.NEW_ORDER:
             continue
 
@@ -313,6 +342,47 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
                     ADMIN_ID,
                     f"Выдан аккаунт по заказу <b>#{order_id}</b>\n"
                     f"Данные: <code>{email}:{password}</code>\n"
+                    f"Осталось в базе: <b>{left}</b> шт.",
+                    parse_mode="HTML",
+                ),
+                loop,
+            )
+        except Exception as e:
+            asyncio.run_coroutine_threadsafe(
+                bot.send_message(
+                    ADMIN_ID,
+                    f"Ошибка отправки по заказу #{order_id}: {e}\n"
+                    f"Аккаунт: <code>{email}:{password}</code>",
+                    parse_mode="HTML",
+                ),
+                loop,
+            )
+
+
+async def main() -> None:
+    if not TG_TOKEN:
+        raise RuntimeError("Не задана переменная окружения TG_TOKEN!")
+    if ADMIN_ID == 0:
+        raise RuntimeError("Не задана переменная окружения ADMIN_ID!")
+    if not FUNPAY_GOLDEN_KEY:
+        raise RuntimeError("Не задана переменная окружения FUNPAY_GOLDEN_KEY!")
+
+    ensure_files()
+    bot = Bot(token=TG_TOKEN)
+    dp = build_dispatcher()
+    loop = asyncio.get_running_loop()
+    worker_task = asyncio.create_task(asyncio.to_thread(funpay_worker_loop, bot, loop))
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        worker_task.cancel()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+нные: <code>{email}:{password}</code>\n"
                     f"Осталось в базе: <b>{left}</b> шт.",
                     parse_mode="HTML",
                 ),
