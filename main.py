@@ -12,18 +12,15 @@ try:
     import FunPayAPI  # noqa: F401
     import aiogram  # noqa: F401
 except ModuleNotFoundError:
-    if REQ_FILE.exists():
-        cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-r", str(REQ_FILE)]
-    else:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "aiogram==3.13.1",
-            "FunPayAPI==0.1.24",
-        ]
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        "aiogram==3.13.1",
+        "FunPayAPI==1.1.0",
+    ]
     try:
         subprocess.check_call(cmd)
     except subprocess.CalledProcessError:
@@ -32,7 +29,7 @@ except ModuleNotFoundError:
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from FunPayAPI import Account, Runner, types
+from FunPayAPI import Account, Runner, enums, types
 
 logging.basicConfig(level=logging.INFO)
 
@@ -183,13 +180,24 @@ def build_dispatcher() -> Dispatcher:
     return dp
 
 
+def _resolve_chat_id(account: Account, order: object) -> int:
+    chat_id = getattr(order, "chat_id", None)
+    if chat_id is not None:
+        return int(chat_id)
+    buyer_username = getattr(order, "buyer_username", None)
+    if buyer_username:
+        chat = account.get_chat_by_name(buyer_username, True)
+        if chat is not None and getattr(chat, "id", None) is not None:
+            return int(chat.id)
+    raise RuntimeError("Не удалось определить chat_id покупателя")
+
+
 def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
-    account = Account(FUNPAY_GOLDEN_KEY)
-    account.get()
+    account = Account(FUNPAY_GOLDEN_KEY).get()
     runner = Runner(account)
 
     for event in runner.listen(requests_delay=4.0):
-        if event.type != types.EventTypes.NEW_ORDER:
+        if event.type != enums.EventTypes.NEW_ORDER:
             continue
 
         order = event.order
@@ -228,7 +236,7 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
         msg_text = DELIVERY_TEMPLATE.format(login=login, password=password)
 
         try:
-            chat_id = order.chat_id
+            chat_id = _resolve_chat_id(account, order)
             account.send_message(chat_id, msg_text)
             mark_order_processed(order_id)
 
