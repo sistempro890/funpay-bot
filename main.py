@@ -136,6 +136,16 @@ async def add_accounts_from_text(text: str) -> int:
     return len(incoming)
 
 
+async def _get_lot_keyword_async() -> str:
+    async with file_lock:
+        return get_lot_keyword()
+
+
+async def _get_stock_count_async() -> int:
+    async with file_lock:
+        return len(get_stock_lines())
+
+
 def is_admin(message: Message) -> bool:
     return ADMIN_ID != 0 and message.from_user is not None and message.from_user.id == ADMIN_ID
 
@@ -255,8 +265,9 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
         if is_order_already_processed(order_id):
             continue
 
-        async with file_lock:
-            lot_keyword = get_lot_keyword()
+        lot_keyword = asyncio.run_coroutine_threadsafe(
+            _get_lot_keyword_async(), loop
+        ).result()
 
         title = getattr(order, "title", "") or getattr(order, "description", "") or ""
         if lot_keyword.lower() not in title.lower():
@@ -309,6 +320,40 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
             )
         except Exception as e:
             asyncio.run_coroutine_threadsafe(
+                bot.send_message(
+                    ADMIN_ID,
+                    f"Ошибка отправки по заказу #{order_id}: {e}\n"
+                    f"Аккаунт: <code>{email}:{password}</code>",
+                    parse_mode="HTML",
+                ),
+                loop,
+            )
+
+
+async def main() -> None:
+    if not TG_TOKEN:
+        raise RuntimeError("Не задана переменная окружения TG_TOKEN!")
+    if ADMIN_ID == 0:
+        raise RuntimeError("Не задана переменная окружения ADMIN_ID!")
+    if not FUNPAY_GOLDEN_KEY:
+        raise RuntimeError("Не задана переменная окружения FUNPAY_GOLDEN_KEY!")
+
+    ensure_files()
+    bot = Bot(token=TG_TOKEN)
+    dp = build_dispatcher()
+    loop = asyncio.get_running_loop()
+    worker_task = asyncio.create_task(asyncio.to_thread(funpay_worker_loop, bot, loop))
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        worker_task.cancel()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+e_threadsafe(
                 bot.send_message(
                     ADMIN_ID,
                     f"Ошибка отправки по заказу #{order_id}: {e}\n"
