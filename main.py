@@ -1,7 +1,33 @@
 import asyncio
 import logging
 import os
+import subprocess
+import sys
 from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+REQ_FILE = BASE_DIR / "requirements.txt"
+
+try:
+    import FunPayAPI  # noqa: F401
+    import aiogram  # noqa: F401
+except ModuleNotFoundError:
+    if REQ_FILE.exists():
+        cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-r", str(REQ_FILE)]
+    else:
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "aiogram==3.13.1",
+            "FunPayAPI==0.1.24",
+        ]
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError:
+        subprocess.check_call(cmd + ["--break-system-packages"])
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -29,8 +55,8 @@ DELIVERY_TEMPLATE = (
     "Сразу после входа смените пароль и проверьте доступ."
 )
 
-STOCK_FILE = Path("stock.txt")
-SENT_ORDERS_FILE = Path("sent_orders.txt")
+STOCK_FILE = BASE_DIR / "stock.txt"
+SENT_ORDERS_FILE = BASE_DIR / "sent_orders.txt"
 
 file_lock = asyncio.Lock()
 
@@ -68,6 +94,7 @@ def mark_order_processed(order_id: str) -> None:
 
 
 async def pop_one_account() -> tuple[str, str] | None:
+    """Берёт первую строку login:password из stock.txt и удаляет её из очереди."""
     async with file_lock:
         lines = get_stock_lines()
         if not lines:
@@ -83,6 +110,7 @@ async def pop_one_account() -> tuple[str, str] | None:
 
 
 async def add_accounts_from_text(text: str) -> int:
+    """Добавляет новые строки login:password из сообщения админа в Telegram."""
     incoming = [
         line.strip()
         for line in text.splitlines()
