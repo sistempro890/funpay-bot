@@ -18,7 +18,7 @@ ADMIN_ID = int(_admin_raw) if _admin_raw.isdigit() else 0
 
 FUNPAY_GOLDEN_KEY = os.getenv("FUNPAY_GOLDEN_KEY", "").strip()
 
-# Часть названия лота на FunPay для автовыдачи (можно поменять под свой товар)
+# Часть названия лота на FunPay для автовыдачи
 LOT_TITLE_KEYWORD = os.getenv("LOT_TITLE_KEYWORD", "Google аккаунт").strip()
 
 # Сообщение покупателю после оплаты
@@ -68,7 +68,6 @@ def mark_order_processed(order_id: str) -> None:
 
 
 async def pop_one_account() -> tuple[str, str] | None:
-    """Берёт первую строку login:password из stock.txt и удаляет её из очереди."""
     async with file_lock:
         lines = get_stock_lines()
         if not lines:
@@ -84,7 +83,6 @@ async def pop_one_account() -> tuple[str, str] | None:
 
 
 async def add_accounts_from_text(text: str) -> int:
-    """Добавляет новые строки login:password из сообщения админа в Telegram."""
     incoming = [
         line.strip()
         for line in text.splitlines()
@@ -260,4 +258,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-  
