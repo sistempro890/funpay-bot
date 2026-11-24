@@ -1,2 +1,2 @@
 aiogram==3.13.1
-FunPayAPI==0.1.24
+FunPayAPI==1.1.0
