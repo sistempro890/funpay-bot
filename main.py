@@ -29,7 +29,7 @@ except ModuleNotFoundError:
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-from FunPayAPI import Account, Runner, enums, types
+from FunPayAPI import Account, Runner, enums
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,19 +41,20 @@ ADMIN_ID = int(_admin_raw) if _admin_raw.isdigit() else 0
 
 FUNPAY_GOLDEN_KEY = os.getenv("FUNPAY_GOLDEN_KEY", "").strip()
 
-# Часть названия лота на FunPay для автовыдачи
-LOT_TITLE_KEYWORD = os.getenv("LOT_TITLE_KEYWORD", "Google аккаунт").strip()
+# Начальное ключевое слово из названия объявления на FunPay
+DEFAULT_LOT_KEYWORD = os.getenv("LOT_TITLE_KEYWORD", "Google аккаунт").strip()
 
 # Сообщение покупателю после оплаты
 DELIVERY_TEMPLATE = (
     "Спасибо за покупку! Вот данные от вашего аккаунта:\n"
-    "Логин: {login}\n"
+    "Почта: {email}\n"
     "Пароль: {password}\n\n"
     "Сразу после входа смените пароль и проверьте доступ."
 )
 
 STOCK_FILE = BASE_DIR / "stock.txt"
 SENT_ORDERS_FILE = BASE_DIR / "sent_orders.txt"
+LOT_CONFIG_FILE = BASE_DIR / "lot_keyword.txt"
 
 file_lock = asyncio.Lock()
 
@@ -63,6 +64,19 @@ def ensure_files() -> None:
         STOCK_FILE.write_text("", encoding="utf-8")
     if not SENT_ORDERS_FILE.exists():
         SENT_ORDERS_FILE.write_text("", encoding="utf-8")
+    if not LOT_CONFIG_FILE.exists():
+        LOT_CONFIG_FILE.write_text(DEFAULT_LOT_KEYWORD, encoding="utf-8")
+
+
+def get_lot_keyword() -> str:
+    ensure_files()
+    raw = LOT_CONFIG_FILE.read_text(encoding="utf-8").strip()
+    return raw if raw else DEFAULT_LOT_KEYWORD
+
+
+def set_lot_keyword(keyword: str) -> None:
+    ensure_files()
+    LOT_CONFIG_FILE.write_text(keyword.strip(), encoding="utf-8")
 
 
 def get_stock_lines() -> list[str]:
@@ -91,7 +105,7 @@ def mark_order_processed(order_id: str) -> None:
 
 
 async def pop_one_account() -> tuple[str, str] | None:
-    """Берёт первую строку login:password из stock.txt и удаляет её из очереди."""
+    """Берёт первую строку почта:пароль из stock.txt и удаляет её из очереди."""
     async with file_lock:
         lines = get_stock_lines()
         if not lines:
@@ -100,14 +114,14 @@ async def pop_one_account() -> tuple[str, str] | None:
         save_stock_lines(lines)
 
     if ":" in item:
-        login, password = item.split(":", 1)
+        email, password = item.split(":", 1)
     else:
-        login, password = item, ""
-    return login.strip(), password.strip()
+        email, password = item, ""
+    return email.strip(), password.strip()
 
 
 async def add_accounts_from_text(text: str) -> int:
-    """Добавляет новые строки login:password из сообщения админа в Telegram."""
+    """Добавляет новые строки почта:пароль из сообщения админа в Telegram."""
     incoming = [
         line.strip()
         for line in text.splitlines()
@@ -133,13 +147,43 @@ def build_dispatcher() -> Dispatcher:
     async def cmd_start(message: Message) -> None:
         if not is_admin(message):
             return
+        async with file_lock:
+            current_lot = get_lot_keyword()
+            count = len(get_stock_lines())
         await message.answer(
             "Бот запущен и готов к работе.\n\n"
-            "Отправляй сюда строки <code>login:password</code> (можно сразу пачкой) — "
+            "Отправляй сюда строки <code>почта:пароль</code> (можно сразу пачкой) — "
             "я добавлю их в очередь на автовыдачу.\n\n"
+            f"Текущее объявление (фильтр): <b>{current_lot}</b>\n"
+            f"В наличии: <b>{count}</b> шт.\n\n"
             "Команды:\n"
+            "/lot <i>фраза из объявления</i> — выбрать объявление для автовыдачи\n"
             "/stock — сколько аккаунтов в наличии\n"
             "/clear — очистить базу",
+            parse_mode="HTML",
+        )
+
+    @dp.message(Command("lot"))
+    async def cmd_lot(message: Message) -> None:
+        if not is_admin(message):
+            return
+        raw_text = (message.text or "").strip()
+        parts = raw_text.split(maxsplit=1)
+        async with file_lock:
+            if len(parts) < 2 or not parts[1].strip():
+                current_lot = get_lot_keyword()
+                await message.answer(
+                    f"Сейчас автовыдача работает по объявлению: <b>{current_lot}</b>\n\n"
+                    "Чтобы сменить, напиши например:\n"
+                    "<code>/lot Аккаунт Google</code>",
+                    parse_mode="HTML",
+                )
+                return
+            new_lot = parts[1].strip()
+            set_lot_keyword(new_lot)
+
+        await message.answer(
+            f"Объявление для автовыдачи обновлено: <b>{new_lot}</b>",
             parse_mode="HTML",
         )
 
@@ -149,7 +193,12 @@ def build_dispatcher() -> Dispatcher:
             return
         async with file_lock:
             count = len(get_stock_lines())
-        await message.answer(f"В наличии аккаунтов: <b>{count}</b>", parse_mode="HTML")
+            current_lot = get_lot_keyword()
+        await message.answer(
+            f"В наличии аккаунтов: <b>{count}</b>\n"
+            f"Объявление: <b>{current_lot}</b>",
+            parse_mode="HTML",
+        )
 
     @dp.message(Command("clear"))
     async def cmd_clear(message: Message) -> None:
@@ -166,7 +215,7 @@ def build_dispatcher() -> Dispatcher:
         added = await add_accounts_from_text(message.text or "")
         if added == 0:
             await message.answer(
-                "Не нашёл строк для добавления. Пришли аккаунты в формате <code>login:password</code>.",
+                "Не нашёл строк для добавления. Пришли аккаунты в формате <code>почта:пароль</code>.",
                 parse_mode="HTML",
             )
             return
@@ -206,12 +255,16 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
         if is_order_already_processed(order_id):
             continue
 
+        async with file_lock:
+            lot_keyword = get_lot_keyword()
+
         title = getattr(order, "title", "") or getattr(order, "description", "") or ""
-        if LOT_TITLE_KEYWORD.lower() not in title.lower():
+        if lot_keyword.lower() not in title.lower():
             asyncio.run_coroutine_threadsafe(
                 bot.send_message(
                     ADMIN_ID,
-                    f"Новый заказ #{order_id} по другому лоту: <b>{title}</b>\nВыдай вручную.",
+                    f"Новый заказ #{order_id} по другому объявлению: <b>{title}</b>\n"
+                    f"Текущий фильтр: <b>{lot_keyword}</b>\nВыдай вручную.",
                     parse_mode="HTML",
                 ),
                 loop,
@@ -232,8 +285,8 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
             )
             continue
 
-        login, password = creds
-        msg_text = DELIVERY_TEMPLATE.format(login=login, password=password)
+        email, password = creds
+        msg_text = DELIVERY_TEMPLATE.format(email=email, password=password)
 
         try:
             chat_id = _resolve_chat_id(account, order)
@@ -248,7 +301,7 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
                 bot.send_message(
                     ADMIN_ID,
                     f"Выдан аккаунт по заказу <b>#{order_id}</b>\n"
-                    f"Данные: <code>{login}:{password}</code>\n"
+                    f"Данные: <code>{email}:{password}</code>\n"
                     f"Осталось в базе: <b>{left}</b> шт.",
                     parse_mode="HTML",
                 ),
@@ -259,7 +312,7 @@ def funpay_worker_loop(bot: Bot, loop: asyncio.AbstractEventLoop) -> None:
                 bot.send_message(
                     ADMIN_ID,
                     f"Ошибка отправки по заказу #{order_id}: {e}\n"
-                    f"Аккаунт: <code>{login}:{password}</code>",
+                    f"Аккаунт: <code>{email}:{password}</code>",
                     parse_mode="HTML",
                 ),
                 loop,
@@ -294,3 +347,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
